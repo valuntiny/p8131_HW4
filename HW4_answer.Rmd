@@ -1,0 +1,174 @@
+---
+title: "HW4_answer"
+author: "Guojing Wu"
+date: "2/28/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = F, 
+                      warning = F)
+library(MASS) # for ordinal
+library(tidyverse)
+library(nnet) # for multinomial
+theme_set(theme_bw())
+```
+
+# Problem
+
+Read data:
+```{r}
+data_copen = tibble(type = rep(c("Tower", "Apartment", "House"), each = 6), 
+                    contact = rep(rep(c("Low", "High"), each = 3), 3),
+                    satisfaction = rep(c("Low satisfaction", "Medium satisfaction", "High satisfaction"), 6), 
+                    n = c(c(65, 54, 100, 34, 47, 100), 
+                          c(130, 76, 111, 141, 116, 191), 
+                          c(67, 48, 62, 130, 105, 104))) %>% 
+  mutate(contact = factor(contact, levels = c("Low", "High")), 
+         type = factor(type, levels = c("Tower", "Apartment", "House")), 
+         satisfaction = factor(satisfaction, levels = c("Low satisfaction", "Medium satisfaction", "High satisfaction")))
+```
+
+## i) Summarize the data
+
+### 1) association between satisfaction and contact
+
+```{r, dpi = 300}
+data_SC = data_copen %>% 
+  group_by(contact, satisfaction) %>% 
+  summarise(n = sum(n)) %>% 
+  group_by(contact) %>% 
+  mutate(n_total = sum(n), 
+         percentage = n * 100 / n_total) %>% 
+  select(-n_total, -n)
+
+data_SC %>% 
+  spread(key = satisfaction, value = percentage) %>% knitr::kable()
+data_SC %>% 
+  ggplot(aes(x = contact, y = percentage, fill = satisfaction)) +
+  geom_bar(stat = "identity", position = position_dodge())
+```
+
+From the table and barplot, we can see that 'Low' contact is associated with more 'Low satisfaction', while 'High' contact is associated with more 'Medium satisfaction' and 'High satisfaction'.
+
+### 2) association between satisfaction and type of housing
+
+```{r, dpi = 300}
+data_ST = data_copen %>% 
+  group_by(type, satisfaction) %>% 
+  summarise(n = sum(n)) %>% 
+  group_by(type) %>% 
+  mutate(n_total = sum(n), 
+         percentage = n * 100 / n_total) %>% 
+  select(-n_total, -n) 
+
+data_ST %>% 
+  spread(key = satisfaction, value = percentage) %>% knitr::kable()
+data_ST %>% 
+  ggplot(aes(x = type, y = percentage, fill = satisfaction)) +
+  geom_bar(stat = "identity", position=position_dodge())
+```
+
+From the table and barplot, we can see that 'Tower' is associated with more 'High satisfaction', while 'House' is associated with more 'Low satisfaction' and 'Medium satisfaction'.
+
+## ii) Nomial logistic regression
+
+We use multinomial model to fit the data:
+
+* the reference response is 'Low satisfaction'.
+
+* the reference housing type is 'Tower'.
+
+* the reference contact is 'Low'.
+
+```{r}
+data_nom = data_copen %>% 
+  spread(key = satisfaction, value = n)
+
+fit.mult = multinom(cbind(`Low satisfaction`, `Medium satisfaction`, `High satisfaction`) ~ type + contact, data = data_nom)
+
+res.mult = summary(fit.mult)
+res.odds = tibble("type=Apartment" = rep(0,2), 
+                  "type=House" = rep(0,2),
+                  "contact=High" = rep(0,2))
+rownames(res.odds) = c("Medium satisfaction", "High satisfaction")
+for (i in 1:nrow(res.odds)) {
+  for (j in 1:ncol(res.odds)) {
+    res.odds[i,j] = paste(round(exp(res.mult$coefficients[i,j+1]), 3),
+                          ", CI = (", 
+                          round(exp(res.mult$coefficients[i,j+1] + qnorm(0.025) * res.mult$standard.errors[i,j+1]), 3), 
+                          ", ", 
+                          round(exp(res.mult$coefficients[i,j+1] - qnorm(0.025) * res.mult$standard.errors[i,j+1]), 3), 
+                          ")", sep = "")
+  }
+}
+
+res.odds %>% knitr::kable()
+```
+
+From the odds ratio table above, we could interpret that:
+
+* The odds ratio between number of Medium satisfaction and number of Low satisfaction is `r round(exp(res.mult$coefficients[1,2]), 3)` given housing type change from Tower to Apartment.
+
+* The odds ratio between number of Medium satisfaction and number of Low satisfaction is `r round(exp(res.mult$coefficients[1,3]), 3)` given housing type change from Tower to House.
+
+* The odds ratio between number of Medium satisfaction and number of Low satisfaction is `r round(exp(res.mult$coefficients[1,4]), 3)` given contact change from Low to High.
+
+* The odds ratio between number of High satisfaction and number of Low satisfaction is `r round(exp(res.mult$coefficients[2,2]), 3)` given housing type change from Tower to Apartment.
+
+* The odds ratio between number of High satisfaction and number of Low satisfaction is `r round(exp(res.mult$coefficients[2,3]), 3)` given housing type change from Tower to House.
+
+* The odds ratio between number of High satisfaction and number of Low satisfaction is `r round(exp(res.mult$coefficients[2,4]), 3)` given contact change from Low to High.
+
+```{r}
+pihat = predict(fit.mult, type = 'probs') 
+m = rowSums(data_nom[,3:5])
+res.pearson = (data_nom[,3:5] - pihat * m) / sqrt(pihat * m) # pearson residuals 
+
+G.stat = sum(res.pearson ^ 2) # Generalized Pearson Chisq Stat
+pval.G = 1 - pchisq(G.stat, df = (6 - 4) * (3 - 1)) # n = 6, p = 4, J = 3
+
+D.stat = sum(2 * data_nom[,3:5] * log(data_nom[,3:5] / (m * pihat)))
+pval.D = 1 - pchisq(D.stat, df = (6 - 4) * (3 - 1))
+```
+
+* The pvalue we got from Pearson chi-square analysis is `r round(pval.G, 3)`
+
+* The pvalue we got from Deviance analysis is `r round(pval.D, 3)`
+
+which all shows that we failed to reject the null hypothesis, meaning these isn't much of a difference between this model and the full model, so the model fits the data well.
+
+## iii) Ordinal logistic regression
+
+We use proportional odds model to fit the data:
+
+* the reference housing type is 'Tower'.
+
+* the reference contact is 'Low'.
+
+```{r}
+fit.ord = polr(satisfaction ~ type + contact, data = data_copen, weights = n)
+
+res.ord = summary(fit.ord)
+res.ord$coefficients %>% knitr::kable()
+```
+
+From the estimated $\beta_{p}$ above, we could interpret that:
+
+* The log odds ratio of lower categories vs. higher categories is `r round(res.ord$coefficients[1,1], 3)`, given housing type change from Tower to Apartment.
+
+* The log odds ratio of lower categories vs. higher categories is `r round(res.ord$coefficients[2,1], 3)`, given housing type change from Tower to House
+
+* The log odds ratio of lower categories vs. higher categories is `r round(res.ord$coefficients[3,1], 3)`, given contact level change from Low to High
+
+## iv) Pearson residuals
+
+```{r}
+pihat = predict(fit.ord, data_nom, type = 'p')
+m = rowSums(cbind(data_nom$`Low satisfaction`, data_nom$`Medium satisfaction`, data_nom$`High satisfaction`))
+res.pearson = (data_nom[,3:5] - pihat * m) / sqrt(pihat * m)
+cbind(type = data_nom$type, contact = data_nom$contact, res.pearson) %>% knitr::kable()
+```
+
+From the table, we could see that the largest discrepancy is when given housing type = `House`, contact level = `High` and `High satisfaction`, the Pearson residual is `r round(res.pearson[6,3], 3)`
